@@ -1,0 +1,235 @@
+name: Build, Push to ECR and Deploy to ECS
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_ACCOUNT_ID: 071954286641
+  AWS_REGION: ap-south-1
+  ECR_REPO_PREFIX: reos
+  ECS_CLUSTER: reos-cluster
+  WEB_SERVICE: crm-web-service
+  BACKEND_SERVICE: crm-backend-service
+  AI_SERVICE: crm-ai-service-service
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deploy repo
+        uses: actions/checkout@v4
+
+      - name: Checkout crm-web
+        uses: actions/checkout@v4
+        with:
+          repository: re-os-crm/crm-web
+          token: ${{ secrets.ORG_REPO_PAT }}
+          path: crm-web
+
+      - name: Checkout crm-backend
+        uses: actions/checkout@v4
+        with:
+          repository: re-os-crm/crm-backend
+          token: ${{ secrets.ORG_REPO_PAT }}
+          path: crm-backend
+
+      - name: Checkout crm-ai-service
+        uses: actions/checkout@v4
+        with:
+          repository: re-os-crm/crm-ai-service
+          token: ${{ secrets.ORG_REPO_PAT }}
+          path: crm-ai-service
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Ensure ECR repos exist
+        run: |
+          set -e
+          for repo in crm-web crm-backend crm-ai-service; do
+            full_repo="${ECR_REPO_PREFIX}/$repo"
+            aws ecr describe-repositories --repository-names "$full_repo" >/dev/null 2>&1 || \
+              aws ecr create-repository --repository-name "$full_repo" >/dev/null
+          done
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Set image tags
+        run: |
+          echo "SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-7)" >> $GITHUB_ENV
+          echo "IMAGE_TAG=latest" >> $GITHUB_ENV
+
+      - name: Build and push crm-web
+        uses: docker/build-push-action@v5
+        with:
+          context: ./crm-web
+          push: true
+          tags: |
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-web:${{ github.sha }}
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-web:latest
+
+      - name: Build and push crm-backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./crm-backend
+          push: true
+          tags: |
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-backend:${{ github.sha }}
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-backend:latest
+
+      - name: Build and push crm-ai-service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./crm-ai-service
+          push: true
+          tags: |
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-ai-service:${{ github.sha }}
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-ai-service:latest
+
+      - name: Wait a moment for images to be available
+        run: sleep 5
+
+      - name: Register and update task definition for crm-web
+        env:
+          IMAGE: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-web:${{ github.sha }}
+          AI_SERVICE_KEY: ${{ secrets.AI_SERVICE_KEY }}
+        run: |
+          jq -n \
+            --arg image "$IMAGE" \
+            --arg execRole "${{ secrets.ECS_TASK_EXEC_ROLE }}" \
+            --arg taskRole "${{ secrets.ECS_TASK_ROLE }}" \
+            --arg aiKey "$AI_SERVICE_KEY" \
+            --arg region "${AWS_REGION}" \
+            '{
+              family: "crm-web",
+              networkMode: "awsvpc",
+              requiresCompatibilities: ["FARGATE"],
+              cpu: "256",
+              memory: "512",
+              executionRoleArn: $execRole,
+              taskRoleArn: $taskRole,
+              containerDefinitions: [{
+                name: "crm-web",
+                image: $image,
+                essential: true,
+                portMappings: [{containerPort: 3000, protocol: "tcp"}],
+                environment: [
+                  {name: "NODE_ENV", value: "production"},
+                  {name: "PORT", value: "3000"},
+                  {name: "REOS_API_BASE_URL", value: "http://crm-backend.reos.local:3001"},
+                  {name: "AI_SERVICE_BASE_URL", value: "http://crm-ai-service.reos.local:8000"},
+                  {name: "AI_SERVICE_KEY", value: $aiKey}
+                ],
+                logConfiguration: {
+                  logDriver: "awslogs",
+                  options: {
+                    "awslogs-group": "/ecs/crm-web",
+                    "awslogs-region": $region,
+                    "awslogs-stream-prefix": "ecs"
+                  }
+                }
+              }]
+            }' > taskdef-web.json
+          TASKDEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef-web.json --query 'taskDefinition.taskDefinitionArn' --output text)
+          aws ecs update-service --cluster ${ECS_CLUSTER} --service ${WEB_SERVICE} --task-definition "$TASKDEF_ARN" --force-new-deployment
+
+      - name: Register and update task definition for crm-backend
+        env:
+          IMAGE: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-backend:${{ github.sha }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_PRIVATE_KEY: ${{ secrets.JWT_PRIVATE_KEY }}
+          JWT_PUBLIC_KEY: ${{ secrets.JWT_PUBLIC_KEY }}
+        run: |
+          jq -n \
+            --arg image "$IMAGE" \
+            --arg execRole "${{ secrets.ECS_TASK_EXEC_ROLE }}" \
+            --arg taskRole "${{ secrets.ECS_TASK_ROLE }}" \
+            --arg dbUrl "$DATABASE_URL" \
+            --arg jwtPriv "$JWT_PRIVATE_KEY" \
+            --arg jwtPub "$JWT_PUBLIC_KEY" \
+            --arg region "${AWS_REGION}" \
+            '{
+              family: "crm-backend",
+              networkMode: "awsvpc",
+              requiresCompatibilities: ["FARGATE"],
+              cpu: "512",
+              memory: "1024",
+              executionRoleArn: $execRole,
+              taskRoleArn: $taskRole,
+              containerDefinitions: [{
+                name: "crm-backend",
+                image: $image,
+                essential: true,
+                portMappings: [{containerPort: 3001, protocol: "tcp"}],
+                environment: [
+                  {name: "NODE_ENV", value: "production"},
+                  {name: "PORT", value: "3001"},
+                  {name: "DATABASE_URL", value: $dbUrl},
+                  {name: "JWT_PRIVATE_KEY", value: $jwtPriv},
+                  {name: "JWT_PUBLIC_KEY", value: $jwtPub},
+                  {name: "JWT_ACCESS_TTL", value: "15m"},
+                  {name: "JWT_REFRESH_TTL", value: "30d"},
+                  {name: "JWT_ISSUER", value: "reos"},
+                  {name: "JWT_AUDIENCE", value: "reos-api"},
+                  {name: "BCRYPT_COST", value: "12"}
+                ],
+                logConfiguration: {
+                  logDriver: "awslogs",
+                  options: {
+                    "awslogs-group": "/ecs/crm-backend",
+                    "awslogs-region": $region,
+                    "awslogs-stream-prefix": "ecs"
+                  }
+                }
+              }]
+            }' > taskdef-backend.json
+          TASKDEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef-backend.json --query 'taskDefinition.taskDefinitionArn' --output text)
+          aws ecs update-service --cluster ${ECS_CLUSTER} --service ${BACKEND_SERVICE} --task-definition "$TASKDEF_ARN" --force-new-deployment
+
+      - name: Register and update task definition for crm-ai-service
+        env:
+          IMAGE: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-ai-service:${{ github.sha }}
+          AI_SERVICE_KEY: ${{ secrets.AI_SERVICE_KEY }}
+        run: |
+          jq -n \
+            --arg image "$IMAGE" \
+            --arg execRole "${{ secrets.ECS_TASK_EXEC_ROLE }}" \
+            --arg taskRole "${{ secrets.ECS_TASK_ROLE }}" \
+            --arg serviceKey "$AI_SERVICE_KEY" \
+            --arg region "${AWS_REGION}" \
+            '{
+              family: "crm-ai-service",
+              networkMode: "awsvpc",
+              requiresCompatibilities: ["FARGATE"],
+              cpu: "256",
+              memory: "512",
+              executionRoleArn: $execRole,
+              taskRoleArn: $taskRole,
+              containerDefinitions: [{
+                name: "crm-ai-service",
+                image: $image,
+                essential: true,
+                portMappings: [{containerPort: 8000, protocol: "tcp"}],
+                environment: [
+                  {name: "HOST", value: "0.0.0.0"},
+                  {name: "PORT", value: "8000"},
+                  {name: "LOG_LEVEL", value: "info"},
+                  {name: "SERVICE_KEY", value: $serviceKey}
+                ],
+                logConfiguration: {
+                  logDriver: "awslogs",
+                  options: {
+                    "awslogs-group": "/ecs/crm-ai-service",
+                    "awslogs-region": $region,
+                    "awslogs-stream-prefix": "ecs"
+                  }
+                }
+              }]
+            }' > taskdef-ai.json
+          TASKDEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef-ai.json --query 'taskDefinition.taskDefinitionArn' --output text)
+          aws ecs update-service --cluster ${ECS_CLUSTER} --service ${AI_SERVICE} --task-definition "$TASKDEF_ARN" --force-new-deployment

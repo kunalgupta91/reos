@@ -1,0 +1,5 @@
+aws_account_id = "071954286641" # replace with your AWS account id
+aws_region     = "ap-south-1"
+github_owner   = "your-github-org-or-user"
+github_repo    = "your-repo-name"
+cluster_name   = "reos-cluster"

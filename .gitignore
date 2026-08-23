@@ -1,0 +1,15 @@
+# Source lives in separate repos (re-os-crm/*); CI checks them out at build time.
+/crm-web/
+/crm-backend/
+/crm-ai-service/
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/terraform.tfvars
+infra/terraform/*.tfplan
+
+# Local artifacts
+taskdef-*.json
+github_api_response.json
