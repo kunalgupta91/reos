@@ -20,26 +20,11 @@ jobs:
       - name: Checkout deploy repo
         uses: actions/checkout@v4
 
-      - name: Checkout crm-web
+      - name: Checkout service source (re-os-code)
         uses: actions/checkout@v4
         with:
-          repository: re-os-crm/crm-web
-          token: ${{ secrets.ORG_REPO_PAT }}
-          path: crm-web
-
-      - name: Checkout crm-backend
-        uses: actions/checkout@v4
-        with:
-          repository: re-os-crm/crm-backend
-          token: ${{ secrets.ORG_REPO_PAT }}
-          path: crm-backend
-
-      - name: Checkout crm-ai-service
-        uses: actions/checkout@v4
-        with:
-          repository: re-os-crm/crm-ai-service
-          token: ${{ secrets.ORG_REPO_PAT }}
-          path: crm-ai-service
+          repository: kunalgupta91/re-os-code
+          path: src
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v2
@@ -67,7 +52,7 @@ jobs:
       - name: Build and push crm-web
         uses: docker/build-push-action@v5
         with:
-          context: ./crm-web
+          context: ./src/crm-web
           push: true
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-web:${{ github.sha }}
@@ -76,7 +61,7 @@ jobs:
       - name: Build and push crm-backend
         uses: docker/build-push-action@v5
         with:
-          context: ./crm-backend
+          context: ./src/crm-backend
           push: true
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-backend:${{ github.sha }}
@@ -85,7 +70,7 @@ jobs:
       - name: Build and push crm-ai-service
         uses: docker/build-push-action@v5
         with:
-          context: ./crm-ai-service
+          context: ./src/crm-ai-service
           push: true
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_PREFIX }}/crm-ai-service:${{ github.sha }}
