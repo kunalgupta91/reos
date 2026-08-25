@@ -5,7 +5,7 @@ on:
     branches: [ main ]
 
 env:
-  AWS_ACCOUNT_ID: 071954286641
+  AWS_ACCOUNT_ID: "071954286641"
   AWS_REGION: ap-south-1
   ECR_REPO_PREFIX: reos
   ECS_CLUSTER: reos-cluster
