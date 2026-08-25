@@ -29,14 +29,6 @@ jobs:
           repository: kunalgupta91/re-os-code
           path: src
 
-      - name: Debug OIDC token claims
-        run: |
-          TOKEN=$(curl -sSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
-          PAYLOAD=$(echo "$TOKEN" | cut -d '.' -f2)
-          PAD=$((4 - ${#PAYLOAD} % 4))
-          if [ "$PAD" -ne 4 ]; then PAYLOAD="$PAYLOAD$(printf '=%.0s' $(seq 1 $PAD))"; fi
-          echo "$PAYLOAD" | tr '_-' '/+' | base64 -d | jq '{sub, aud, iss, repository, ref}'
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v2
         with:
