@@ -25,7 +25,7 @@ Record steps taken, findings, and next actions for deploying this repo to AWS (E
 
 ## Status: LIVE
 
-crm-web is publicly reachable at `http://reos-crm-web-alb-1493556412.ap-south-1.elb.amazonaws.com` and serving the app correctly. crm-backend connects to RDS and starts cleanly. crm-ai-service builds and starts. All three ECS services report `desired: 1, running: 1`.
+crm-web is publicly reachable at `http://reos-crm-web-alb-1493556412.ap-south-1.elb.amazonaws.com` and serving the app correctly. crm-backend connects to RDS and starts cleanly with all routes mapped. crm-ai-service starts cleanly with all routers (including pricing) wired up. All three ECS services report `desired: 1, running: 1`, steady state confirmed after rollout settled.
 
 ## Challenges hit and fixes applied (chronological)
 
@@ -59,6 +59,8 @@ crm-web is publicly reachable at `http://reos-crm-web-alb-1493556412.ap-south-1.
 
 15. **`crm-ai-service` container crash-looped: `exec: "uvicorn": executable file not found in $PATH`.** The Dockerfile's final stage only copied `/usr/local/lib/python3.11/site-packages` from the builder stage — `pip install`'s CLI entry-point scripts (like `uvicorn`) land in `/usr/local/bin`, which was never copied. → Added `COPY --from=builder /usr/local/bin /usr/local/bin` to the final stage.
 
+16. **`crm-ai-service` started but then crashed on import: `ModuleNotFoundError: No module named 'pricing.router'`.** `main.py` imports `pricing.router`, but `pricing/router.py`, `pricing/schemas.py`, and `pricing/__init__.py` didn't exist at all — `pricing/predictor.py` itself was already broken (importing from the nonexistent `pricing.schemas`). This was a real incomplete feature in the source, not a deploy/config bug, so it wasn't something to paper over by guessing an API shape. → Found `tests/test_pricing.py` already specified the exact expected schema (including a `bathrooms` field on `UnitFeatures` and `price_range` as a plain dict, not a nested model) — wrote `pricing/schemas.py` and `pricing/router.py` to match that spec exactly, following the same router/schemas pattern as the sibling `churn/` module. Wired `pricing_router` back into `main.py`.
+
 ## Key lessons for next time
 
 - **Never pipe secret values into `gh secret set` from PowerShell** — it silently injects a UTF-8 BOM. Always use `-b "$value"`.
@@ -67,6 +69,8 @@ crm-web is publicly reachable at `http://reos-crm-web-alb-1493556412.ap-south-1.
 - **GitHub's OIDC `sub` claim now includes immutable owner/repo IDs** (`repo:OWNER@ID/REPO@ID:...`), not just names — trust policies written against the plain `repo:OWNER/REPO:*` pattern from older tutorials will silently fail with "Not authorized" and no other clue. Decode the actual token (temporary debug step) if this happens again.
 - **Multi-stage Docker builds for Python apps must copy `/usr/local/bin`, not just `site-packages`** — pip's CLI entry points live there.
 - **`next build` runs ESLint** — unused-var errors that are invisible in dev fail the production Docker build.
+- **Existing test files are a free spec** — when reconstructing a missing module, check for a matching `tests/test_*.py` first; it often pins the exact field names/shapes needed, catching mismatches (like a missing `bathrooms` field) before another deploy round-trip.
+- **A CI workflow triggered on every push to `main` will also fire on doc-only commits** — added `paths-ignore: ['**.md']` to skip wasted rebuilds; watch for two runs racing if you forget and push mid-deploy (cancel the redundant one).
 
 ## Remaining / possible follow-ups (not yet done, not blocking)
 
@@ -74,3 +78,4 @@ crm-web is publicly reachable at `http://reos-crm-web-alb-1493556412.ap-south-1.
 - `sslmode=no-verify` skips RDS server certificate validation. Fine for now; switching to `verify-full` with the RDS CA bundle would be a hardening step later.
 - No HTTPS/custom domain on the ALB yet (plain HTTP on port 80).
 - `reos-admin` IAM user now has full `AdministratorAccess` — broader than needed; could be scoped down later.
+- `pricing/predictor.py`'s heuristic model and `pricing/recommender.py`'s market-signal model are simple rules-based logic (not ML) — fine as a first cut, worth revisiting if real pricing data becomes available.
