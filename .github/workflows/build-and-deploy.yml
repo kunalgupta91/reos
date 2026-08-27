@@ -3,6 +3,8 @@ name: Build, Push to ECR and Deploy to ECS
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - '**.md'
 
 env:
   AWS_ACCOUNT_ID: "071954286641"
